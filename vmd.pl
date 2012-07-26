@@ -12,6 +12,7 @@ use Encode;
 use File::Copy;
 use Thread::Pool::Simple;
 use LWP::UserAgent;
+use MP3::Tag;
 
 my $version   = '0.03';
 my $app_name  = 'vmd-'.$version;
@@ -58,7 +59,7 @@ my $msg_authorize_fail = "Упс! Что-то пошло не так и авто
 
 my ($help_flag,$version_flag,
     $login,$password,$api_id,
-    $uid,$gid,$aid,$rec
+    $uid,$gid,$aid,$rec,$retag_flag
     );
     
 my $trh = 2; # кол-во потоков по умолчанию
@@ -73,6 +74,7 @@ GetOptions("help"       => \$help_flag,
            "aid=s"      => \$aid,
            "rec=i"      => \$rec,
            "trh=i"      => \$trh,
+           "retag"      => \$retag_flag,
           );
 
 # Инициализация пула воркеров
@@ -215,10 +217,10 @@ sub download {
     $i++;
     my $aid    = $track->{aid};
     my $url    = $track->{url};
-    my $artist = $track->{artist};
-    my $title  = $track->{title};
-    $artist = &clean_name($artist, without_punctuation => 1);
-    $title  = &clean_name($title, without_punctuation => 1);
+    my $artist_orig = $track->{artist};
+    my $title_orig  = $track->{title};
+    my $artist = &clean_name($artist_orig, without_punctuation => 1);
+    my $title  = &clean_name($title_orig, without_punctuation => 1);
     $artist = encode_utf8($artist);
     $title  = encode_utf8($title);
     
@@ -230,7 +232,7 @@ sub download {
       print "$i/$n Уже скачан $mp3_filename - ОК\n";
       next;
     }
-   $pool->add($url,$mp3_filename,$i,$n);
+   $pool->add($url,$mp3_filename,$i,$n,$artist_orig,$title_orig);
   }
 }
 
@@ -239,6 +241,8 @@ sub download_track {
   my $filename = shift;
   my $i        = shift;
   my $n        = shift;
+  my $artist   = shift;
+  my $title    = shift;
   my $ua = LWP::UserAgent->new; # Get LWP::UserAgent object
   print "$i/$n Скачиваю $filename ...\n";
   my $req = HTTP::Request->new(GET => $url);  
@@ -250,6 +254,44 @@ sub download_track {
   }
   else {
     print " - ", $res->status_line, "\n";
+    return;
+  }
+  if ($retag_flag) {
+    my $mp3 = MP3::Tag->new( $filename );
+    my $tag;
+    my $dirty = 0;
+    if ($mp3) {
+      # read an existing tag
+      $mp3->get_tags();
+
+      if ( exists $mp3->{ID3v2} ) {
+        print "$i/$n Найден ID3v2 тэг\n";
+        $tag = $mp3->{ID3v2};
+      } elsif ( exists $mp3->{ID3v1} ) {
+        print "$i/$n Найден ID3v1 тэг\n";
+        $tag = $mp3->{ID3v1};
+      }
+      if ($tag) {
+        if ( !$tag->title ) {
+          eval {
+            print decode_utf8("$i/$n Отсутствует информация о названии, устанавливаем в [") . $title . decode_utf8("]\n");
+            $tag->title($title);
+            $dirty = 1;
+          };
+        }
+        if ( !$tag->artist ) {
+          eval {
+            print decode_utf8("$i/$n Отсутствует информация об артисте, устанавливаем в [") . $artist . decode_utf8("]\n");
+            $tag->artist($artist);
+            $dirty = 1;
+          };
+        }
+        if ( $dirty ) {
+          print "$i/$n Записываем обновленный ID3 тэг в файл $filename\n";
+          $tag->write_tag();
+        }
+      }
+    }
   }
 }
 
@@ -311,6 +353,7 @@ sub app {
     $vk = VK::App->new(
        api_id      => &api_id_from_file($api_id_file),
        cookie_file => $cookie_file, # Name of the file to restore cookies from and save cookies to
+       scope => 'friends,audio',
     );
   };
   if ($@ || !$vk || !$vk->uid) {
