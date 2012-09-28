@@ -13,6 +13,7 @@ use File::Copy;
 use Thread::Pool::Simple;
 use LWP::UserAgent;
 use MP3::Tag;
+use Fcntl;
 
 my $version   = '0.03';
 my $app_name  = 'vmd-'.$version;
@@ -59,8 +60,11 @@ my $msg_authorize_fail = "Упс! Что-то пошло не так и авто
 
 my ($help_flag,$version_flag,
     $login,$password,$api_id,
-    $uid,$gid,$aid,$rec,$retag_flag
+    $uid,$gid,$aid,$rec,$retag_flag,
+    $use_index_flag
     );
+
+my track_index; # список уже скачанных файлов, если укзан --use-index
     
 my $trh = 2; # кол-во потоков по умолчанию
 
@@ -75,6 +79,7 @@ GetOptions("help"       => \$help_flag,
            "rec=i"      => \$rec,
            "trh=i"      => \$trh,
            "retag"      => \$retag_flag,
+           "use-index"  => \$use_index_flag
           );
 
 # Инициализация пула воркеров
@@ -197,6 +202,9 @@ $pool->join();
 sub check_file_exists {
   my $file_name = shift;
   my $id = $1 if $file_name =~ /-(\d+)\.mp3$/;
+  if ($use_index_flag) {
+    return $track_index{$id};
+  }
   foreach (<*$id.mp3>) {
     move($_,$file_name) if ($file_name ne $_);
     return 1;
@@ -204,11 +212,27 @@ sub check_file_exists {
   return 0;
 }
 
+sub load_track_index {
+  if (!$use_index_flag) {
+    return;
+  }
+  $track_index = {};
+  my $index_file = ".vmd.index";
+  open $fh, $index_file;
+  while ($fh) {
+    chomp;
+    my $id = $1 if $_ =~ /-(\d+)\.mp3$/;
+    $track_index{$id} = 1;
+  }
+  close $fh;
+}
+
 sub download {
   my $tracks = shift;
   my $prefix = shift; $prefix = "" unless $prefix;
-  &check_tracks($tracks);
-  
+  &load_track_index();
+  &check_tracks($tracks); 
+ 
   $|=1;
   my $i = 0;
   my $n = scalar @{$tracks->{response}}; # number of tracks
@@ -292,6 +316,13 @@ sub download_track {
         }
       }
     }
+  }
+  if ($use_index_flag) {
+    my $index_file = ".vmd.index";
+    open my $fh, ">>", $index_file or die "Не могу открыть файл $index_file";
+    flock $fh, LOCK_EX or die "Не могу захватить файл $inde_file";
+    print $fh, $filename . "\n";
+    close $fh; 
   }
 }
 
